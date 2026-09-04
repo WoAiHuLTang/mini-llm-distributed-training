@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# 数据与结果
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+benchmarks/results/*.csv
+!benchmarks/results/.gitkeep
+profiling/traces/*
+!profiling/traces/.gitkeep
+
+# 图表
+*.png
+*.pdf
+
+# 环境
+.env
+*.log
+
+# IDE
+.vscode/
+.idea/
+.DS_Store

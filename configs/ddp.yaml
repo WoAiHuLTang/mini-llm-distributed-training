@@ -1,0 +1,13 @@
+# DDP strategy configuration.
+# DDP keeps a full model replica per rank and averages gradients via AllReduce.
+strategy: ddp
+
+# DistributedDataParallel options
+ddp:
+  find_unused_parameters: false
+  gradient_as_bucket_view: true
+  static_graph: false
+  bucket_cap_mb: 25
+
+# Mixed precision is applied via torch.autocast (bf16).
+mixed_precision: bf16

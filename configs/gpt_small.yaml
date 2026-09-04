@@ -1,0 +1,26 @@
+# MiniGPT model configuration (the unified workload).
+# This model (~85M params) is small enough to fit on a single RTX 4090 in BF16,
+# yet large enough to expose meaningful DDP vs FSDP memory/throughput trade-offs.
+model:
+  vocab_size: 32000
+  hidden_size: 768
+  num_layers: 12
+  num_heads: 12
+  seq_len: 512
+  intermediate_size: 3072   # 4 * hidden_size
+  dropout: 0.0
+  # NOTE: use "1.0e-5" (with a decimal point) so PyYAML parses it as a float.
+  # A bare "1e-5" is treated as a string under YAML 1.1.
+  layer_norm_eps: 1.0e-5
+
+# Default training hyper-parameters (overridable via CLI).
+training:
+  lr: 3.0e-4
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  grad_clip: 1.0
+  micro_batch_size: 8
+  epochs: 3
+  mixed_precision: bf16
+  seed: 0

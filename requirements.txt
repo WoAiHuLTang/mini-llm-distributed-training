@@ -1,0 +1,19 @@
+# Core
+torch>=2.1
+# Pin numpy < 2 so pip installs a prebuilt wheel (numpy 1.26.4) instead of
+# building the latest numpy 2.x from source, which needs GCC >= 9.3. This keeps
+# installs working on older toolchains (e.g. CentOS 7 / GCC 4.8) and is fully
+# compatible with torch 2.x and Python 3.11.
+numpy<2
+pyyaml
+
+# Benchmark / plotting
+# Pin pandas/matplotlib to versions that ship prebuilt wheels AND support
+# numpy 1.x. pandas >= 2.3 and matplotlib >= 3.10 require numpy 2 (source build
+# on this mirror), which would break on the old GCC toolchain. pandas 2.2.x has
+# prebuilt wheels and supports numpy 1.26.
+matplotlib<3.10
+pandas<2.3
+
+# Dev / testing
+pytest

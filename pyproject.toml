@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini-llm-distributed-training"
+version = "0.1.0"
+description = "A minimal reproducible lab for studying memory, throughput and communication trade-offs of LLM distributed training."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Your Name" }]
+dependencies = [
+    "torch>=2.1",
+    # Pin numpy < 2 so installs use a prebuilt wheel (numpy 1.26.4) instead of
+    # building numpy 2.x from source (needs GCC >= 9.3). Compatible with torch 2.x.
+    "numpy<2",
+    "pyyaml",
+    # Pin pandas/matplotlib to versions with prebuilt wheels that support numpy 1.x.
+    # pandas >= 2.3 and matplotlib >= 3.10 require numpy 2 (source build on the
+    # Tsinghua mirror), which breaks on the old GCC toolchain.
+    "matplotlib<3.10",
+    "pandas<2.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "torch-tb-profiler",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

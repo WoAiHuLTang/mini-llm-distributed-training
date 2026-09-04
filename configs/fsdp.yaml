@@ -1,0 +1,20 @@
+# FSDP strategy configuration.
+# FSDP shards params/grads/optimizer states across ranks (ZeRO-3 style by
+# default). Params are AllGathered before use and freed afterwards.
+strategy: fsdp
+
+# FSDP options
+fsdp:
+  # full_shard (ZeRO-3) | shard_grad_op (ZeRO-2 style) | no_shard
+  sharding_strategy: full_shard
+  # FSDP applies its own mixed precision policy.
+  mixed_precision: bf16
+  use_activation_checkpointing: false
+  cpu_offload: false
+  # backward_pre | backward_post | none
+  backward_prefetch: backward_pre
+  # Auto-wrap large leaf modules above this many params.
+  min_num_params: 1000000
+
+# A separate config variant enabling activation checkpointing on top of FSDP.
+# (Pass --use-activation-checkpointing on the CLI, or create fsdp_ac.yaml.)
