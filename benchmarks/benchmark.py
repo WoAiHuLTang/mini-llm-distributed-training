@@ -66,13 +66,23 @@ CSV_HEADER = [
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="MiniGPT distributed benchmark")
-    p.add_argument("--strategy", choices=["single", "ddp", "fsdp"], default="single")
+    p.add_argument(
+        "--strategy",
+        choices=["single", "ddp", "fsdp", "deepspeed"],
+        default="single",
+    )
     p.add_argument("--config", type=str, default="configs/gpt_small.yaml")
     p.add_argument("--micro-batch-size", type=int, default=8)
     p.add_argument("--warmup-steps", type=int, default=5)
     p.add_argument("--measure-steps", type=int, default=20)
     p.add_argument("--mixed-precision", choices=["bf16", "fp16", "none"], default="bf16")
     p.add_argument("--use-activation-checkpointing", action="store_true")
+    p.add_argument(
+        "--ds-config",
+        type=str,
+        default=None,
+        help="Path to DeepSpeed JSON config (required for --strategy deepspeed)",
+    )
     p.add_argument("--csv", type=str, default="benchmarks/results/benchmark.csv")
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args()
@@ -92,8 +102,8 @@ def append_csv_row(path: str, row: dict) -> None:
 def main() -> None:
     args = parse_args()
 
-    # Initialize distributed for ddp/fsdp (torchrun sets env vars).
-    if args.strategy in ("ddp", "fsdp"):
+    # Initialize distributed for ddp/fsdp/deepspeed (torchrun sets env vars).
+    if args.strategy in ("ddp", "fsdp", "deepspeed"):
         init_distributed(backend="nccl")
     rank = get_rank()
     world_size = get_world_size()
@@ -107,11 +117,13 @@ def main() -> None:
         model=model_cfg,
         mixed_precision=args.mixed_precision,
         use_activation_checkpointing=args.use_activation_checkpointing,
+        micro_batch_size=args.micro_batch_size,
+        ds_config=args.ds_config,
         seed=args.seed,
     )
 
     # Data. Use a large-enough synthetic set so warmup+measure don't exhaust it.
-    distributed = args.strategy in ("ddp", "fsdp")
+    distributed = args.strategy in ("ddp", "fsdp", "deepspeed")
     num_train = max((args.warmup_steps + args.measure_steps) * args.micro_batch_size * 2, 4096)
     train_loader, _, train_sampler = build_dataloaders(
         seq_len=model_cfg.seq_len,
@@ -142,10 +154,23 @@ def main() -> None:
         measure_steps=args.measure_steps,
     )
 
+    # Derive a strategy label. For DeepSpeed, encode the ZeRO stage from the
+    # ds-config filename (e.g. deepspeed_z2.json -> "deepspeed_z2") so that
+    # ZeRO-2 and ZeRO-3 runs can be told apart in the CSV / plots.
+    strategy_label = args.strategy
+    if args.strategy == "deepspeed" and args.ds_config:
+        stem = Path(args.ds_config).stem
+        if "z3" in stem:
+            strategy_label = "deepspeed_z3"
+        elif "z2" in stem:
+            strategy_label = "deepspeed_z2"
+        else:
+            strategy_label = f"deepspeed_{stem}"
+
     # Only rank 0 writes the CSV row (all ranks measured the same workload).
     if is_main_process():
         row = {
-            "strategy": args.strategy,
+            "strategy": strategy_label,
             "gpus": world_size,
             "micro_batch_size": args.micro_batch_size,
             "seq_len": model_cfg.seq_len,

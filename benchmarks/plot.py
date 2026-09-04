@@ -25,9 +25,15 @@ import pandas as pd  # noqa: E402
 
 def _label(row: pd.Series) -> str:
     """Human-readable strategy label, e.g. 'FSDP+AC (2 GPU)'."""
-    name = row["strategy"].upper()
-    if row["strategy"] == "fsdp" and row["activation_checkpointing"]:
+    s = row["strategy"]
+    if s == "fsdp" and row["activation_checkpointing"]:
         name = "FSDP+AC"
+    elif s == "deepspeed_z2":
+        name = "DeepSpeed ZeRO-2"
+    elif s == "deepspeed_z3":
+        name = "DeepSpeed ZeRO-3"
+    else:
+        name = s.upper()
     return f"{name} ({int(row['gpus'])} GPU)"
 
 

@@ -37,13 +37,23 @@ from .utils import (
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train MiniGPT under a strategy")
-    p.add_argument("--strategy", choices=["single", "ddp", "fsdp"], default="single")
+    p.add_argument(
+        "--strategy",
+        choices=["single", "ddp", "fsdp", "deepspeed"],
+        default="single",
+    )
     p.add_argument("--config", type=str, default="configs/gpt_small.yaml")
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--micro-batch-size", type=int, default=8)
     p.add_argument("--lr", type=float, default=None)
     p.add_argument("--use-activation-checkpointing", action="store_true")
     p.add_argument("--mixed-precision", choices=["bf16", "fp16", "none"], default="bf16")
+    p.add_argument(
+        "--ds-config",
+        type=str,
+        default=None,
+        help="Path to DeepSpeed JSON config (required for --strategy deepspeed)",
+    )
     p.add_argument("--log-interval", type=int, default=10)
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args()
@@ -53,7 +63,7 @@ def main() -> None:
     args = parse_args()
 
     # Distributed init if needed (torchrun sets these env vars).
-    if args.strategy in ("ddp", "fsdp"):
+    if args.strategy in ("ddp", "fsdp", "deepspeed"):
         init_distributed(backend="nccl")
     rank = get_rank()
     world_size = get_world_size()
@@ -69,6 +79,8 @@ def main() -> None:
         lr=args.lr if args.lr is not None else 3e-4,
         mixed_precision=args.mixed_precision,
         use_activation_checkpointing=args.use_activation_checkpointing,
+        micro_batch_size=args.micro_batch_size,
+        ds_config=args.ds_config,
         log_interval=args.log_interval,
         seed=args.seed,
     )
@@ -83,7 +95,7 @@ def main() -> None:
     )
 
     # Data.
-    distributed = args.strategy in ("ddp", "fsdp")
+    distributed = args.strategy in ("ddp", "fsdp", "deepspeed")
     train_loader, val_loader, train_sampler = build_dataloaders(
         seq_len=model_cfg.seq_len,
         vocab_size=model_cfg.vocab_size,

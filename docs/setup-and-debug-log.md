@@ -17,6 +17,7 @@
 9. [阶段八：运行 profiler 获取通信数据](#9-阶段八运行-profiler-获取通信数据)
 10. [阶段九：重构 README 为规范结构](#10-阶段九重构-readme-为规范结构)
 11. [最终实测数据汇总](#11-最终实测数据汇总)
+12. [阶段十：v0.2 DeepSpeed ZeRO-2 / ZeRO-3 集成](#12-阶段十v02-deepspeed-zero-2--zero-3-集成)
 
 ---
 
@@ -258,6 +259,42 @@ torchrun --nproc_per_node=2 profiling/pytorch_profiler.py \
 | FSDP | AllGather (147.4 ms) + ReduceScatter (58.0 ms) + AllReduce (6.3 ms) | 640.9 | 3,421.8 | 18.7% |
 
 > FSDP 通信时间约为 DDP 的 **2.6 倍**，且 AllGather 调用次数（202 次）远多于 DDP 的 AllReduce（26 次）。
+
+---
+
+## 12. 阶段十：v0.2 DeepSpeed ZeRO-2 / ZeRO-3 集成
+
+### 目标
+
+在统一 Trainer / Benchmark 中加入 DeepSpeed ZeRO-2 与 ZeRO-3，与 Single / DDP / FSDP 做公平对比。
+
+### 操作
+
+1. **安装 DeepSpeed**：先装 `deepspeed==0.19.6`，导入失败（见下方报错 5），降级到 `deepspeed==0.14.4` 成功。
+2. **新增封装** `src/mini_llm/distributed/deepspeed.py`：读取 JSON 配置、补全 batch size / 优化器 / bf16 精度，调用 `deepspeed.initialize` 返回 engine。
+3. **扩展 Trainer** `src/mini_llm/trainer.py`：`TrainerConfig` 加 `ds_config` / `micro_batch_size` 字段；`deepspeed` 分支用 `wrap_deepspeed` 得到 engine；训练步走 `engine.backward(loss)` + `engine.step()`；跳过自建优化器与 autocast；`state_dict` 用 `engine.module`。
+4. **新增 JSON 配置** `configs/deepspeed_z2.json`（stage 2）与 `configs/deepspeed_z3.json`（stage 3）。
+5. **更新入口**：`benchmarks/benchmark.py` 与 `src/mini_llm/train.py` 增加 `--strategy deepspeed` 与 `--ds-config`；CSV 的 strategy 字段按 ds-config 文件名区分 `deepspeed_z2` / `deepspeed_z3`。
+6. **新增脚本** `scripts/train_deepspeed.sh`，并把 ZeRO-2 / ZeRO-3 加入 `scripts/benchmark.sh`。
+7. **运行 benchmark** 并更新 README / 新增 `docs/deepspeed.md`。
+
+### 报错与修复
+
+| # | 报错 / 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 5 | `RuntimeError: Dynamo is not supported on Python 3.12+`（导入 deepspeed 0.19.6） | 0.19.6 的 muon 模块 `@compiler.compile()` 在 py3.12 崩溃 | 降级到 `deepspeed==0.14.4` |
+| 6 | `TypeError: '>' not supported between instances of 'str' and 'int'`（`_batch_assertion`） | 未传 dataloader，JSON 里 `"auto"` 无法解析 | 在封装里按 `micro_batch × grad_accum × world_size` 显式算出 `train_batch_size` |
+
+### v0.2 实测数据（~110M 参数，bf16，micro_batch=8，2×RTX 4090）
+
+| Strategy | GPUs | Peak Mem/GPU (GB) | tokens/s | step_ms | Scaling Efficiency |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| DDP | 2 | 6.37 | 39,785 | 103.0 | 37.8% |
+| FSDP | 2 | 5.15 | 23,378 | 175.2 | 22.2% |
+| DeepSpeed ZeRO-2 | 2 | 5.43 | 45,052 | 90.9 | 42.8% |
+| DeepSpeed ZeRO-3 | 2 | 4.71 | 24,980 | 164.0 | 23.7% |
+
+> ZeRO-2 参数全量副本、前向无需 AllGather，是 2 卡分片策略中吞吐最高的；ZeRO-3 连参数也分片，显存最低但通信量最大、吞吐骤降。
 
 ---
 

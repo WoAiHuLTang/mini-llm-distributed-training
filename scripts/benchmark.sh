@@ -55,6 +55,26 @@ torchrun --nproc_per_node=2 --master_port=29512 \
     --use-activation-checkpointing \
     --csv "${CSV}"
 
+# 5) DeepSpeed ZeRO-2 (2 GPU)
+echo "---- deepspeed ZeRO-2 (2 GPU) ----"
+torchrun --nproc_per_node=2 --master_port=29513 \
+    benchmarks/benchmark.py \
+    --strategy deepspeed --config "${CONFIG}" \
+    --ds-config configs/deepspeed_z2.json \
+    --micro-batch-size "${MICRO_BATCH}" \
+    --warmup-steps "${WARMUP}" --measure-steps "${MEASURE}" \
+    --csv "${CSV}"
+
+# 6) DeepSpeed ZeRO-3 (2 GPU)
+echo "---- deepspeed ZeRO-3 (2 GPU) ----"
+torchrun --nproc_per_node=2 --master_port=29514 \
+    benchmarks/benchmark.py \
+    --strategy deepspeed --config "${CONFIG}" \
+    --ds-config configs/deepspeed_z3.json \
+    --micro-batch-size "${MICRO_BATCH}" \
+    --warmup-steps "${WARMUP}" --measure-steps "${MEASURE}" \
+    --csv "${CSV}"
+
 echo "==> Generating plots"
 python benchmarks/plot.py --csv "${CSV}" --outdir benchmarks/results
 

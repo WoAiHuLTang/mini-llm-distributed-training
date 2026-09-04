@@ -7,6 +7,10 @@ torch>=2.1
 numpy<2
 pyyaml
 
+# DeepSpeed (only needed for the "deepspeed" strategy).
+# Pin to 0.14.4: 0.19.6 fails to import on Python 3.12 (Dynamo not supported).
+deepspeed==0.14.4
+
 # Benchmark / plotting
 # Pin pandas/matplotlib to versions that ship prebuilt wheels AND support
 # numpy 1.x. pandas >= 2.3 and matplotlib >= 3.10 require numpy 2 (source build

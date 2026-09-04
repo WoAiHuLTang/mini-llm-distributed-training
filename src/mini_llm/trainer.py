@@ -1,9 +1,10 @@
 """Unified trainer that runs the *same* MiniGPT under different strategies.
 
 Supported strategies:
-    - "single": plain model on one GPU (baseline).
-    - "ddp":     DistributedDataParallel (full replica per rank).
-    - "fsdp":    FullyShardedDataParallel (sharded params/grads/opt states).
+    - "single":    plain model on one GPU (baseline).
+    - "ddp":       DistributedDataParallel (full replica per rank).
+    - "fsdp":      FullyShardedDataParallel (sharded params/grads/opt states).
+    - "deepspeed": DeepSpeed ZeRO-2 / ZeRO-3 (engine takes over the step).
 
 The trainer exposes a ``train_step`` that can be driven either by a normal
 training loop or by the benchmark harness / profiler, so all experiments share
@@ -21,6 +22,7 @@ import torch.nn as nn
 from torch.optim import AdamW
 
 from .distributed.ddp import wrap_ddp
+from .distributed.deepspeed import wrap_deepspeed
 from .distributed.fsdp import wrap_fsdp
 from .model import GPTConfig, MiniGPT
 from .utils import (
@@ -38,7 +40,7 @@ from .utils import (
 class TrainerConfig:
     """Runtime configuration for the trainer."""
 
-    strategy: str = "single"  # single | ddp | fsdp
+    strategy: str = "single"  # single | ddp | fsdp | deepspeed
     # Model
     model: GPTConfig = field(default_factory=GPTConfig)
     # Optimizer / training
@@ -47,12 +49,15 @@ class TrainerConfig:
     beta1: float = 0.9
     beta2: float = 0.95
     grad_clip: float = 1.0
+    micro_batch_size: int = 8
     # Mixed precision (single/ddp use autocast; fsdp uses its own policy)
     mixed_precision: str = "bf16"  # bf16 | fp16 | none
     # FSDP options
     fsdp_sharding: str = "full_shard"
     use_activation_checkpointing: bool = False
     cpu_offload: bool = False
+    # DeepSpeed options
+    ds_config: Optional[str] = None  # path to DeepSpeed JSON config
     # Logging
     log_interval: int = 10
     seed: int = 0
@@ -97,6 +102,29 @@ class Trainer:
                 use_activation_checkpointing=cfg.use_activation_checkpointing,
                 cpu_offload=cfg.cpu_offload,
             )
+        elif cfg.strategy == "deepspeed":
+            if not is_dist_initialized():
+                raise RuntimeError(
+                    "DeepSpeed requires an initialized process group"
+                )
+            if not cfg.ds_config:
+                raise ValueError(
+                    "DeepSpeed strategy requires a --ds-config JSON file"
+                )
+            # DeepSpeed engine replaces the model AND manages the optimizer.
+            self.model, self.optimizer = wrap_deepspeed(
+                self.model,
+                cfg.ds_config,
+                device=self.device,
+                lr=cfg.lr,
+                weight_decay=cfg.weight_decay,
+                beta1=cfg.beta1,
+                beta2=cfg.beta2,
+                mixed_precision=cfg.mixed_precision,
+                micro_batch_size=cfg.micro_batch_size,
+                grad_clip=cfg.grad_clip,
+                seed=cfg.seed,
+            )
         else:
             raise ValueError(f"Unknown strategy '{cfg.strategy}'")
 
@@ -104,7 +132,11 @@ class Trainer:
         # parameters; inner FSDP modules' params are already flattened into the
         # leaf that wraps them. Collecting every FSDP module's parameters would
         # double-count nested ones, so we only take leaf FSDP modules.
-        if cfg.strategy == "fsdp":
+        # DeepSpeed already created its own optimizer inside wrap_deepspeed, so
+        # we skip this block for the "deepspeed" strategy.
+        if cfg.strategy == "deepspeed":
+            pass  # self.optimizer already set by wrap_deepspeed
+        elif cfg.strategy == "fsdp":
             from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
             all_fsdp = FSDP.fsdp_modules(self.model)
@@ -138,11 +170,16 @@ class Trainer:
                 foreach=True,
             )
 
-        # AMP autocast context for single / ddp.
+        # AMP autocast context for single / ddp. DeepSpeed manages its own
+        # precision internally, so we disable the outer autocast for it.
         self.autocast_ctx = torch.autocast(
             device_type=self.device.type,
             dtype=torch.bfloat16 if cfg.mixed_precision == "bf16" else torch.float16,
-            enabled=(self.device.type == "cuda" and cfg.mixed_precision != "none"),
+            enabled=(
+                self.device.type == "cuda"
+                and cfg.mixed_precision != "none"
+                and cfg.strategy != "deepspeed"
+            ),
         )
 
         self._step = 0
@@ -156,25 +193,37 @@ class Trainer:
         input_ids = batch["input_ids"].to(self.device, non_blocking=True)
         target_ids = batch["target_ids"].to(self.device, non_blocking=True)
 
-        self.optimizer.zero_grad(set_to_none=True)
-
-        with self.autocast_ctx:
+        if self.cfg.strategy == "deepspeed":
+            # DeepSpeed engine drives the whole step: forward on the engine,
+            # then engine.backward(loss) (which reduces gradients) and
+            # engine.step() (which clips + applies the optimizer). DeepSpeed
+            # manages its own autocast / precision internally.
+            self.optimizer.zero_grad()
             loss = self.model(input_ids, targets=target_ids)
+            self.model.backward(loss)
+            self.model.step()
+        else:
+            self.optimizer.zero_grad(set_to_none=True)
 
-        loss.backward()
+            with self.autocast_ctx:
+                loss = self.model(input_ids, targets=target_ids)
 
-        # Clip gradients (FSDP: clip on the flattened params).
-        if self.cfg.grad_clip > 0:
-            if self.cfg.strategy == "fsdp":
-                from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+            loss.backward()
 
-                FSDP.clip_grad_norm_(self.model, self.cfg.grad_clip)
-            else:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.cfg.grad_clip
-                )
+            # Clip gradients (FSDP: clip on the flattened params).
+            if self.cfg.grad_clip > 0:
+                if self.cfg.strategy == "fsdp":
+                    from torch.distributed.fsdp import (
+                        FullyShardedDataParallel as FSDP,
+                    )
 
-        self.optimizer.step()
+                    FSDP.clip_grad_norm_(self.model, self.cfg.grad_clip)
+                else:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.cfg.grad_clip
+                    )
+
+            self.optimizer.step()
 
         tokens = input_ids.numel()
         self._step += 1
@@ -194,8 +243,12 @@ class Trainer:
             for batch in val_loader:
                 input_ids = batch["input_ids"].to(self.device)
                 target_ids = batch["target_ids"].to(self.device)
-                with self.autocast_ctx:
+                if self.cfg.strategy == "deepspeed":
+                    # DeepSpeed manages precision internally.
                     loss = self.model(input_ids, targets=target_ids)
+                else:
+                    with self.autocast_ctx:
+                        loss = self.model(input_ids, targets=target_ids)
                 total_loss += float(loss.detach().float())
                 n += 1
         self.model.train()
@@ -275,6 +328,9 @@ class Trainer:
             from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
             return FSDP.state_dict(self.model)
+        if self.cfg.strategy == "deepspeed":
+            # DeepSpeed engine exposes the wrapped model via ``.module``.
+            return self.model.module.state_dict()
         return self.model.state_dict()
 
     def load_state_dict(self, state: dict) -> None:
@@ -282,5 +338,7 @@ class Trainer:
             from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
             FSDP.load_state_dict(self.model, state, strict=True)
+        elif self.cfg.strategy == "deepspeed":
+            self.model.module.load_state_dict(state)
         else:
             self.model.load_state_dict(state)
