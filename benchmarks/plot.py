@@ -32,6 +32,12 @@ def _label(row: pd.Series) -> str:
         name = "DeepSpeed ZeRO-2"
     elif s == "deepspeed_z3":
         name = "DeepSpeed ZeRO-3"
+    elif s == "megatron_tp":
+        name = "Megatron TP"
+    elif s == "megatron_tp_sp":
+        name = "Megatron TP+SP"
+    elif s == "megatron_pp2":
+        name = "Megatron PP"
     else:
         name = s.upper()
     return f"{name} ({int(row['gpus'])} GPU)"

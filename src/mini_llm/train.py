@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train MiniGPT under a strategy")
     p.add_argument(
         "--strategy",
-        choices=["single", "ddp", "fsdp", "deepspeed"],
+        choices=["single", "ddp", "fsdp", "deepspeed", "megatron_tp", "megatron_pp"],
         default="single",
     )
     p.add_argument("--config", type=str, default="configs/gpt_small.yaml")
@@ -54,6 +54,23 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to DeepSpeed JSON config (required for --strategy deepspeed)",
     )
+    # Megatron options (used by megatron_tp / megatron_pp).
+    p.add_argument(
+        "--tp-size", type=int, default=1,
+        help="Tensor-model-parallel size (megatron_tp)",
+    )
+    p.add_argument(
+        "--pp-size", type=int, default=1,
+        help="Pipeline-model-parallel size (megatron_pp)",
+    )
+    p.add_argument(
+        "--sequence-parallel", action="store_true",
+        help="Enable sequence parallelism on top of TP (megatron_tp)",
+    )
+    p.add_argument(
+        "--num-microbatches", type=int, default=1,
+        help="Microbatches per step (megatron_pp)",
+    )
     p.add_argument("--log-interval", type=int, default=10)
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args()
@@ -62,9 +79,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    # Distributed init if needed (torchrun sets these env vars).
-    if args.strategy in ("ddp", "fsdp", "deepspeed"):
+    # Distributed init if needed (torchrun sets these env vars).  Megatron
+    # TP/PP need the process group for their collectives.
+    if args.strategy in ("ddp", "fsdp", "deepspeed", "megatron_tp", "megatron_pp"):
         init_distributed(backend="nccl")
+        # Bind this process to its own GPU (needed by Megatron's SP collectives).
+        if torch.cuda.is_available():
+            torch.cuda.set_device(get_rank() % torch.cuda.device_count())
     rank = get_rank()
     world_size = get_world_size()
     logger = Logger(rank)
@@ -81,6 +102,10 @@ def main() -> None:
         use_activation_checkpointing=args.use_activation_checkpointing,
         micro_batch_size=args.micro_batch_size,
         ds_config=args.ds_config,
+        tp_size=args.tp_size,
+        pp_size=args.pp_size,
+        sequence_parallel=args.sequence_parallel,
+        num_microbatches=args.num_microbatches,
         log_interval=args.log_interval,
         seed=args.seed,
     )

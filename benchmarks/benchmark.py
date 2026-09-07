@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="MiniGPT distributed benchmark")
     p.add_argument(
         "--strategy",
-        choices=["single", "ddp", "fsdp", "deepspeed"],
+        choices=["single", "ddp", "fsdp", "deepspeed", "megatron_tp", "megatron_pp"],
         default="single",
     )
     p.add_argument("--config", type=str, default="configs/gpt_small.yaml")
@@ -82,6 +82,23 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to DeepSpeed JSON config (required for --strategy deepspeed)",
+    )
+    # Megatron options (used by megatron_tp / megatron_pp).
+    p.add_argument(
+        "--tp-size", type=int, default=1,
+        help="Tensor-model-parallel size (megatron_tp)",
+    )
+    p.add_argument(
+        "--pp-size", type=int, default=1,
+        help="Pipeline-model-parallel size (megatron_pp)",
+    )
+    p.add_argument(
+        "--sequence-parallel", action="store_true",
+        help="Enable sequence parallelism on top of TP (megatron_tp)",
+    )
+    p.add_argument(
+        "--num-microbatches", type=int, default=1,
+        help="Microbatches per step (megatron_pp)",
     )
     p.add_argument("--csv", type=str, default="benchmarks/results/benchmark.csv")
     p.add_argument("--seed", type=int, default=0)
@@ -102,9 +119,15 @@ def append_csv_row(path: str, row: dict) -> None:
 def main() -> None:
     args = parse_args()
 
-    # Initialize distributed for ddp/fsdp/deepspeed (torchrun sets env vars).
-    if args.strategy in ("ddp", "fsdp", "deepspeed"):
+    # Initialize distributed for ddp/fsdp/deepspeed/megatron (torchrun sets
+    # env vars).  Megatron TP/PP need the process group for their collectives.
+    if args.strategy in ("ddp", "fsdp", "deepspeed", "megatron_tp", "megatron_pp"):
         init_distributed(backend="nccl")
+        # Bind this process to its own GPU.  This is essential for Megatron's
+        # sequence-parallel collectives (all-gather / reduce-scatter), which
+        # allocate temporaries on the *current* CUDA device.
+        if torch.cuda.is_available():
+            torch.cuda.set_device(get_rank() % torch.cuda.device_count())
     rank = get_rank()
     world_size = get_world_size()
     logger = Logger(rank)
@@ -119,10 +142,18 @@ def main() -> None:
         use_activation_checkpointing=args.use_activation_checkpointing,
         micro_batch_size=args.micro_batch_size,
         ds_config=args.ds_config,
+        tp_size=args.tp_size,
+        pp_size=args.pp_size,
+        sequence_parallel=args.sequence_parallel,
+        num_microbatches=args.num_microbatches,
         seed=args.seed,
     )
 
     # Data. Use a large-enough synthetic set so warmup+measure don't exhaust it.
+    # Note: Megatron TP/PP ranks all process the *same* micro-batch (there is no
+    # data-parallel dimension), so they must NOT shard the data via a
+    # DistributedSampler -- only true data-parallel strategies (ddp/fsdp/
+    # deepspeed) shard it.
     distributed = args.strategy in ("ddp", "fsdp", "deepspeed")
     num_train = max((args.warmup_steps + args.measure_steps) * args.micro_batch_size * 2, 4096)
     train_loader, _, train_sampler = build_dataloaders(
@@ -157,6 +188,8 @@ def main() -> None:
     # Derive a strategy label. For DeepSpeed, encode the ZeRO stage from the
     # ds-config filename (e.g. deepspeed_z2.json -> "deepspeed_z2") so that
     # ZeRO-2 and ZeRO-3 runs can be told apart in the CSV / plots.
+    # For Megatron, encode the parallel size and whether SP is on so that
+    # megatron_tp vs megatron_tp_sp vs megatron_pp runs are distinguishable.
     strategy_label = args.strategy
     if args.strategy == "deepspeed" and args.ds_config:
         stem = Path(args.ds_config).stem
@@ -166,6 +199,10 @@ def main() -> None:
             strategy_label = "deepspeed_z2"
         else:
             strategy_label = f"deepspeed_{stem}"
+    elif args.strategy == "megatron_tp":
+        strategy_label = "megatron_tp_sp" if args.sequence_parallel else "megatron_tp"
+    elif args.strategy == "megatron_pp":
+        strategy_label = f"megatron_pp{args.pp_size}"
 
     # Only rank 0 writes the CSV row (all ranks measured the same workload).
     if is_main_process():
