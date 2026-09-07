@@ -1,0 +1,8 @@
+strategy,gpus,micro_batch_size,seq_len,hidden_size,num_layers,mixed_precision,activation_checkpointing,memory_gb,tokens_per_s,step_ms,loss
+single,1,8,512,768,12,bf16,0,5.972,52595.3,77.878,10.5412
+ddp,2,8,512,768,12,bf16,0,6.374,39784.9,102.954,10.532
+fsdp,2,8,512,768,12,bf16,0,5.154,23377.6,175.21,10.5238
+fsdp,2,8,512,768,12,bf16,1,2.128,18171.0,225.414,10.5238
+deepspeed_z2,2,8,512,768,12,bf16,0,5.433,45052.1,90.917,10.5281
+deepspeed_z3,2,8,512,768,12,bf16,0,4.709,24979.9,163.972,10.5281
+megatron_tp,2,8,512,768,12,bf16,0,3.123,35968.0,113.879,10.5378

@@ -13,14 +13,17 @@ venv/
 *.pth
 *.ckpt
 checkpoints/
-benchmarks/results/*.csv
-!benchmarks/results/.gitkeep
 profiling/traces/*
 !profiling/traces/.gitkeep
 
 # 图表
 *.png
 *.pdf
+
+# 提交 benchmarks/results 下的结果数据与图表（供 README 引用展示）
+!benchmarks/results/*.csv
+!benchmarks/results/*.png
+!benchmarks/results/.gitkeep
 
 # 环境
 .env
